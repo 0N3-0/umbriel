@@ -865,8 +865,8 @@ static bool test_whole_box_invalidation(struct fixture* fixture) {
 static bool test_transient_policy(struct fixture* fixture) {
   struct wlr_swapchain* swapchain = create_swapchain(fixture);
   struct fx_effect_shader* identity = fx_effect_shader_create(
-      fixture->renderer, FX_EFFECT_ANIMATION, "vec4 animation(vec2 uv) { return umbriel_sample(uv); }",
-      "transient-identity"
+      fixture->renderer, FX_EFFECT_ANIMATION,
+      "vec4 animation(vec2 uv) { return umbriel_sample(uv) * umbriel_clamped_progress; }", "transient-identity"
   );
   struct fx_effect_shader* clear = fx_effect_shader_create(
       fixture->renderer, FX_EFFECT_ANIMATION, "vec4 animation(vec2 uv) { return umbriel_sample(uv) * 0.0; }",
@@ -910,6 +910,47 @@ static bool test_transient_policy(struct fixture* fixture) {
     wlr_buffer_unlock(rendered);
   }
   wlr_output_state_finish(&state);
+  // A drag updates its uniforms within one episode. Those updates must still
+  // schedule a full repaint and retain the background exposed by deformation.
+  wlr_scene_node_set_animation(&rect->node, FX_SLOT_WINDOWS_IN, NULL, NULL);
+  parameters.expand = 2;
+  wlr_scene_node_set_animation(&rect->node, FX_SLOT_DRAG, identity, &parameters);
+  ok &= warm_up(scene_output, swapchain);
+  ok &= check(pixman_region32_empty(&scene_output->pending_commit_damage), "drag warm-up acknowledges damage");
+  parameters.progress = 0;
+  parameters.linear_progress = 0;
+  wlr_scene_node_set_animation(&rect->node, FX_SLOT_DRAG, identity, &parameters);
+  ok &= check(
+      pixman_region32_contains_rectangle(
+          &scene_output->pending_commit_damage, &(pixman_box32_t){0, 0, TEST_WIDTH, TEST_HEIGHT}
+      ) == PIXMAN_REGION_IN,
+      "a drag uniform update schedules whole-output damage"
+  );
+  ok &= check(
+      pixman_region32_contains_point(&background->node.visible, 8, 8, NULL),
+      "the drag update preserves the uncropped background"
+  );
+  rendered = render_frame(scene_output, swapchain, &state);
+  ok &= check(rendered != NULL, "updated drag frame renders");
+  if (rendered != NULL) {
+    uint8_t under[4];
+    ok &= fixture_read_pixel(fixture, rendered, 8, 8, under)
+        && check(under[0] > 250 && under[2] < 5, "the updated drag program exposes the background");
+    wlr_buffer_unlock(rendered);
+  }
+  wlr_output_state_finish(&state);
+  parameters.expand = 4;
+  parameters.progress = 1;
+  parameters.linear_progress = 1;
+  wlr_scene_node_set_animation(&rect->node, FX_SLOT_DRAG, identity, &parameters);
+  ok &= frame_damage_is(
+      scene_output, swapchain, 0, 0, TEST_WIDTH, TEST_HEIGHT, "changing drag bounds keeps whole-output damage"
+  );
+  wlr_scene_node_set_animation(&rect->node, FX_SLOT_DRAG, NULL, NULL);
+  ok &= check(
+      !pixman_region32_contains_point(&background->node.visible, 8, 8, NULL),
+      "removing the last transient slot restores opaque culling"
+  );
   fx_effect_shader_unref(identity);
   fx_effect_shader_unref(clear);
   wlr_scene_node_destroy(&scene->tree.node);

@@ -1917,7 +1917,15 @@ void wlr_scene_node_set_animation(
   if (transient_now || was_transient) {
     // Progress can change arbitrary texels, so damage the complete scene while custom effects run.
     // Bounded slots fall through: their program only reads and writes texels inside the node.
-    scene_node_update(&scene->tree.node, NULL);
+    if (slot == FX_SLOT_DRAG && !presence_changed && !restarted && previous_expand == animation_expand(animation)) {
+      // A drag's uniform update changes pixels, not node geometry or the
+      // transient visibility policy. Keep whole-output repainting without
+      // walking every node's visibility and output membership again.
+      struct wlr_scene_output* output;
+      wl_list_for_each(output, &scene->outputs, link) { scene_output_damage_whole(output); }
+    } else {
+      scene_node_update(&scene->tree.node, NULL);
+    }
   } else if (presence_changed) {
     scene_effect_damage(node, previous_expand);
     scene_node_update(node, NULL);
